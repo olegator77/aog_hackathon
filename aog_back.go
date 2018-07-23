@@ -15,7 +15,6 @@ import (
 var db *reindexer.Reindexer
 
 func QueryMediaItems(fullTextQ string) (ret []MediaItem) {
-
 	q := db.Query("media_items").Match("search", "@name^1 "+fullTextQ).Limit(10)
 
 	items, err := q.Exec().FetchAll()
@@ -30,17 +29,55 @@ func QueryMediaItems(fullTextQ string) (ret []MediaItem) {
 	return
 }
 
-func lookupMediaItemsByGenre(genre string) *MediaItem {
+func addPeriodQuery(q *reindexer.Query, period map[string]interface{}) {
+	if startDate, ok := period["startDate"]; ok {
+		if sd, ok := startDate.(string); ok {
+			sdTime, err := time.Parse(time.RFC3339, sd)
+			if err != nil {
+				fmt.Println(err)
+			} else {
+				q = q.Where("year", reindexer.GE, sdTime.Year())
+			}
+		}
+	}
+
+	if endDate, ok := period["endDate"]; ok {
+		if sd, ok := endDate.(string); ok {
+			sdTime, err := time.Parse(time.RFC3339, sd)
+			if err != nil {
+				fmt.Println(err)
+			} else {
+				q = q.Where("year", reindexer.LE, sdTime.Year())
+			}
+		}
+	}
+}
+
+func lookupMediaItems(genre, origin, period interface{}) *MediaItem {
 	q := db.Query("media_items").
-		Where("genres_names", reindexer.EQ, genre).
 		Where("type", reindexer.EQ, "film").
 		Sort("imdb", true).
 		Limit(100)
 
-	items, err := q.Exec().FetchAll()
+	if g, ok := genre.(string); ok && g != "" {
+		q = q.Where("genres_names", reindexer.EQ, genre)
+	}
 
+	if o, ok := origin.(string); ok && o != "" {
+		q = q.Where("countries", reindexer.EQ, origin)
+	}
+
+	if p, ok := period.(map[string]interface{}); ok {
+		addPeriodQuery(q, p)
+	}
+
+	items, err := q.Exec().FetchAll()
 	if err != nil {
 		log.Println(err.Error())
+	}
+
+	if len(items) == 0 {
+		return nil
 	}
 
 	return items[rand.Int()%len(items)].(*MediaItem)
@@ -48,7 +85,6 @@ func lookupMediaItemsByGenre(genre string) *MediaItem {
 }
 
 func QueryEPGItems(fullTextQ string) (ret []EPGItem) {
-
 	q := db.Query("epg").
 		Match("search", "@name^1,description^0.3 "+fullTextQ).
 		Where("start_time", reindexer.GT, time.Now().Unix()).
@@ -67,7 +103,6 @@ func QueryEPGItems(fullTextQ string) (ret []EPGItem) {
 }
 
 func AOGHandler(c echo.Context) error {
-
 	dec := json.NewDecoder(c.Request().Body)
 	params := AOGRequestParams{}
 
@@ -79,13 +114,15 @@ func AOGHandler(c echo.Context) error {
 	fmt.Printf("p1->%#v\n\n\n", params.QueryResult.Parameters)
 	fmt.Printf("p2->%#v\n\n\n", params.QueryResult.OutputContexts[0].Parameters)
 
-	textToSpeech := "Я хз что ответить )"
+	textToSpeech := "К сожалению, ничего не найдено"
 
 	paramGenre := params.QueryResult.Parameters["movie-genre"]
+	paramOrigin := params.QueryResult.Parameters["movie-origin"]
+	paramDatePeriod := params.QueryResult.Parameters["date-period"]
 
-	if paramGenre != "" {
-		mi := lookupMediaItemsByGenre(paramGenre)
-		textToSpeech = fmt.Sprintf("Рекомендую посмотреть %s с %s %d года", mi.Name, mi.Persons[0].Name, mi.Year)
+	mi := lookupMediaItems(paramGenre, paramOrigin, paramDatePeriod)
+	if mi != nil {
+		textToSpeech = fmt.Sprintf("Рекомендую посмотреть %s от %s %s года", mi.Name, mi.Persons[0].Name, mi.Year)
 	}
 
 	return sendAOGResponce(c, textToSpeech)
@@ -107,8 +144,6 @@ func sendAOGResponce(c echo.Context, testToSpeech string) error {
 
 func main() {
 	initDB()
-	// fmt.Println(QueryMediaItems("терминатор"))
-	// fmt.Println(QueryEPGItems("новости"))
 
 	log.Println("Staring AOG server")
 
@@ -158,21 +193,17 @@ type AOGRequestParams struct {
 	ResponseID  string `json:"responseId"`
 	Session     string `json:"session"`
 	QueryResult struct {
-		QueryText                string            `json:"queryText"`
-		Parameters               map[string]string `json:"parameters"`
-		AllRequiredParamsPresent bool              `json:"allRequiredParamsPresent"`
-		FulfillmentText          string            `json:"fulfillmentText"`
+		QueryText                string                 `json:"queryText"`
+		Parameters               map[string]interface{} `json:"parameters"`
+		AllRequiredParamsPresent bool                   `json:"allRequiredParamsPresent"`
+		FulfillmentText          string                 `json:"fulfillmentText"`
 		FulfillmentMessages      []struct {
 			Text struct {
 				Text []string `json:"text"`
 			} `json:"text"`
 		} `json:"fulfillmentMessages"`
-		OutputContexts []struct {
-			Name          string            `json:"name"`
-			LifespanCount float32           `json:"lifespanCount"`
-			Parameters    map[string]string `json:"parameters"`
-		} `json:"outputContexts"`
-		Intent struct {
+		OutputContexts []OutputContext `json:"outputContexts"`
+		Intent         struct {
 			Name        string `json:"name"`
 			DisplayName string `json:"displayName"`
 		} `json:"intent"`
@@ -191,6 +222,12 @@ type RespItem struct {
 
 type SimpleResponse struct {
 	TextToSpeech string `json:"textToSpeech"`
+}
+
+type OutputContext struct {
+	Name          string                 `json:"name"`
+	LifespanCount int                    `json:"lifespanCount"`
+	Parameters    map[string]interface{} `json:"parameters"`
 }
 
 type AOGRequestAnswer struct {
@@ -221,11 +258,7 @@ type AOGRequestAnswer struct {
 		// 	Text string `json:"text"`
 		// } `json:"slack"`
 	} `json:"payload"`
-	// OutputContexts []struct {
-	// 	Name          string            `json:"name"`
-	// 	LifespanCount int               `json:"lifespanCount"`
-	// 	Parameters    map[string]string `json:"parameters"`
-	// } `json:"outputContexts"`
+	OutputContexts []OutputContext `json:"outputContexts"`
 	// FollowupEventInput struct {
 	// 	Name         string            `json:"name"`
 	// 	LanguageCode string            `json:"languageCode"`
