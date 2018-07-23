@@ -56,6 +56,7 @@ func addPeriodQuery(q *reindexer.Query, period map[string]interface{}) {
 func lookupMediaItems(genre, origin, period interface{}) *MediaItem {
 	q := db.Query("media_items").
 		Where("type", reindexer.EQ, "film").
+		Where("parent_id", reindexer.EMPTY, 0).
 		Sort("imdb", true).
 		Limit(100)
 
@@ -121,15 +122,35 @@ func AOGHandler(c echo.Context) error {
 	paramDatePeriod := params.QueryResult.Parameters["date-period"]
 
 	mi := lookupMediaItems(paramGenre, paramOrigin, paramDatePeriod)
+	var msg *FulfillmentMessage
 	if mi != nil {
 		textToSpeech = fmt.Sprintf("Рекомендую посмотреть %s от %s %s года", mi.Name, mi.Persons[0].Name, mi.Year)
+
+		subTitle := mi.ShortDescription
+		if len(subTitle) > 120 {
+			subTitle = subTitle[0:120] + "..."
+		}
+
+		msg = &FulfillmentMessage{
+			Card: FulfillmentCard{
+				ImageURI: "https://mos-itv01.svc.iptv.rt.ru" + mi.Logo,
+				Title:    mi.Name,
+				Subtitle: subTitle,
+				Buttons: []FulfillmentButton{
+					FulfillmentButton{
+						"Смотреть",
+						fmt.Sprintf("http://production.smarttv.itv.restr.im/pc/#/media_item/%d", mi.ID),
+					},
+				},
+			},
+		}
 	}
 
-	return sendAOGResponce(c, textToSpeech)
+	return sendAOGResponce(c, textToSpeech, msg)
 
 }
 
-func sendAOGResponce(c echo.Context, testToSpeech string) error {
+func sendAOGResponce(c echo.Context, testToSpeech string, msg *FulfillmentMessage) error {
 	ans := AOGRequestAnswer{}
 
 	ans.Payload.Google.ExpectUserResponse = true
@@ -138,6 +159,14 @@ func sendAOGResponce(c echo.Context, testToSpeech string) error {
 			SimpleResponse: SimpleResponse{TextToSpeech: testToSpeech},
 		},
 	)
+	ans.Source = "https://example.com"
+
+	if msg != nil {
+		ans.FulfillmentText = testToSpeech
+		ans.FulfillmentMessages = append(ans.FulfillmentMessages, *msg)
+	}
+	jsn, _ := json.Marshal(ans)
+	fmt.Printf("\n\n%s\n\n", string(jsn))
 
 	return c.JSON(200, ans)
 }
@@ -161,6 +190,7 @@ type MediaItem struct {
 	Name             string `json:"name"`
 	ShortDescription string `json:"short_description"`
 	Year             string `json:"year"`
+	Logo             string `json:"logo"`
 	Genres           []struct {
 		Name string `json:"name"`
 	} `json:"genres"`
@@ -186,6 +216,14 @@ func initDB() {
 	}
 	if err := db.OpenNamespace("epg", reindexer.DefaultNamespaceOptions(), &EPGItem{}); err != nil {
 		log.Fatal(err)
+	}
+	go pingDB()
+}
+
+func pingDB() {
+	for {
+		db.Query("media_items").Limit(0).Exec().Close()
+		time.Sleep(10 * time.Second)
 	}
 }
 
@@ -230,21 +268,27 @@ type OutputContext struct {
 	Parameters    map[string]interface{} `json:"parameters"`
 }
 
+type FulfillmentButton struct {
+	Text     string `json:"text"`
+	Postback string `json:"postback"`
+}
+
+type FulfillmentCard struct {
+	Title    string              `json:"title"`
+	Subtitle string              `json:"subtitle"`
+	ImageURI string              `json:"imageUri"`
+	Buttons  []FulfillmentButton `json:"buttons"`
+}
+
+type FulfillmentMessage struct {
+	Card FulfillmentCard `json:"card"`
+}
+
 type AOGRequestAnswer struct {
-	// FulfillmentText     string `json:"fulfillmentText"`
-	// FulfillmentMessages []struct {
-	// 	Card struct {
-	// 		Title    string `json:"title"`
-	// 		Subtitle string `json:"subtitle"`
-	// 		ImageURI string `json:"imageUri"`
-	// 		Buttons  []struct {
-	// 			Text     string `json:"text"`
-	// 			Postback string `json:"postback"`
-	// 		} `json:"buttons"`
-	// 	} `json:"card"`
-	// } `json:"fulfillmentMessages"`
-	// Source  string `json:"source"`
-	Payload struct {
+	FulfillmentText     string               `json:"fulfillmentText"`
+	FulfillmentMessages []FulfillmentMessage `json:"fulfillmentMessages"`
+	Source              string               `json:"source"`
+	Payload             struct {
 		Google struct {
 			ExpectUserResponse bool `json:"expectUserResponse"`
 			RichResponse       struct {
