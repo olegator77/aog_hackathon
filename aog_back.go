@@ -353,7 +353,7 @@ type AOGRequestParams struct {
 
 type RespItem struct {
 	SimpleResponse *SimpleResponse `json:"simpleResponse,omitempty"`
-	BasicCard      *BasicCard      `json:"bacicCard,omitempty"`
+	BasicCard      *BasicCard      `json:"basicCard,omitempty"`
 }
 
 type BasicCard struct {
