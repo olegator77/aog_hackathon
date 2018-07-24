@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo"
@@ -13,6 +15,38 @@ import (
 )
 
 var db *reindexer.Reindexer
+var sessionParams = make(map[string]map[string]interface{})
+
+func addToSessionParams(session string, new map[string]interface{}) {
+	params, ok := sessionParams[session]
+	if !ok {
+		sessionParams[session] = new
+	}
+
+	for key, _ := range params {
+		if newValue, ok := new[key]; ok && newValue != nil {
+			if reflect.DeepEqual(newValue, reflect.Zero(reflect.TypeOf(newValue)).Interface()) {
+				continue
+			}
+
+			params[key] = newValue
+		}
+	}
+}
+
+func getParamFromSession(session, paramKey string) interface{} {
+	params, ok := sessionParams[session]
+	if !ok {
+		return ""
+	}
+
+	param, ok := params[paramKey]
+	if !ok {
+		return ""
+	}
+
+	return param
+}
 
 func addPeriodQuery(q *reindexer.Query, period map[string]interface{}) {
 	if startDate, ok := period["startDate"]; ok {
@@ -118,29 +152,25 @@ func QueryEPGItems(fullTextQ string) (ret []EPGItem) {
 	return
 }
 
-func AOGHandler(c echo.Context) error {
-	dec := json.NewDecoder(c.Request().Body)
-	params := AOGRequestParams{}
+func resetHandler(c echo.Context, session string, params AOGRequestParams) error {
+	delete(sessionParams, session)
+	return sendAOGResponce(c, "Параметры сброшены", nil)
+}
 
-	if err := dec.Decode(&params); err != nil {
-		fmt.Println(err)
-		return c.String(400, "Bad request\n")
-	}
-
-	fmt.Printf("p1->%#v\n\n\n", params.QueryResult.Parameters)
-	fmt.Printf("p2->%#v\n\n\n", params.QueryResult.OutputContexts[0].Parameters)
-	fmt.Printf("%#v", params)
+func defaultHandler(c echo.Context, session string, params AOGRequestParams) error {
+	addToSessionParams(session, params.QueryResult.Parameters)
 
 	textToSpeech := "К сожалению, ничего не найдено"
 
-	paramGenre := params.QueryResult.Parameters["movie-genre"]
-	paramOrigin := params.QueryResult.Parameters["movie-origin"]
-	paramDatePeriod := params.QueryResult.Parameters["date-period"]
-	paramPersons := params.QueryResult.Parameters["movie-persons"]
-	paramName := params.QueryResult.Parameters["movie-name"]
+	paramGenre := getParamFromSession(session, "movie-genre")
+	paramOrigin := getParamFromSession(session, "movie-origin")
+	paramDatePeriod := getParamFromSession(session, "date-period")
+	paramPersons := getParamFromSession(session, "movie-persons")
+	paramName := getParamFromSession(session, "movie-name")
 
 	mi := lookupMediaItems(paramGenre, paramOrigin, paramDatePeriod, paramPersons, paramName, params.QueryResult.QueryText)
 	var msg *FulfillmentMessage
+
 	if mi != nil {
 		textToSpeech = fmt.Sprintf("Рекомендую посмотреть %s от %s %s года", mi.Name, mi.Persons[0].Name, mi.Year)
 
@@ -182,10 +212,30 @@ func sendAOGResponce(c echo.Context, testToSpeech string, msg *FulfillmentMessag
 		ans.FulfillmentText = testToSpeech
 		ans.FulfillmentMessages = append(ans.FulfillmentMessages, *msg)
 	}
+
 	jsn, _ := json.Marshal(ans)
 	fmt.Printf("\n\n%s\n\n", string(jsn))
 
 	return c.JSON(200, ans)
+}
+func AOGHandler(c echo.Context) error {
+	dec := json.NewDecoder(c.Request().Body)
+	params := AOGRequestParams{}
+
+	if err := dec.Decode(&params); err != nil {
+		fmt.Println(err)
+		return c.String(400, "Bad request\n")
+	}
+
+	parts := strings.Split(params.QueryResult.OutputContexts[0].Name, "/contexts/")
+	session := parts[0]
+
+	switch params.QueryResult.Intent.DisplayName {
+	case "find-movie - reset":
+		return resetHandler(c, session, params)
+	default:
+		return defaultHandler(c, session, params)
+	}
 }
 
 func main() {
