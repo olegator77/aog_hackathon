@@ -14,21 +14,6 @@ import (
 
 var db *reindexer.Reindexer
 
-func QueryMediaItems(fullTextQ string) (ret []MediaItem) {
-	q := db.Query("media_items").Match("search", "@name^1 "+fullTextQ).Limit(10)
-
-	items, err := q.Exec().FetchAll()
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	for _, mi := range items {
-		ret = append(ret, *mi.(*MediaItem))
-	}
-	return
-}
-
 func addPeriodQuery(q *reindexer.Query, period map[string]interface{}) {
 	if startDate, ok := period["startDate"]; ok {
 		if sd, ok := startDate.(string); ok {
@@ -53,20 +38,47 @@ func addPeriodQuery(q *reindexer.Query, period map[string]interface{}) {
 	}
 }
 
-func lookupMediaItems(genre, origin, period interface{}) *MediaItem {
+func lookupMediaItems(genre, countries, period, persons, name interface{}, queryText string) *MediaItem {
+	sortByRelevancy := false
 	q := db.Query("media_items").
 		Where("type", reindexer.EQ, "film").
 		Where("parent_id", reindexer.EMPTY, 0).
-		Sort("imdb", true).
-		Limit(100)
+		Limit(10)
+
+	// https://github.com/Restream/reindexer/blob/master/fulltext.md#text-query-format
+	ftDSL := ""
 
 	if g, ok := genre.(string); ok && g != "" {
-		q = q.Where("genres_names", reindexer.EQ, genre)
+		// q = q.Where("genres_names", reindexer.EQ, genre)
+		ftDSL = ftDSL + "@genres_names +" + genre.(string) + "~ "
 	}
 
-	if o, ok := origin.(string); ok && o != "" {
-		q = q.Where("countries", reindexer.EQ, origin)
+	if o, ok := countries.(string); ok && o != "" {
+		// q = q.Where("countries", reindexer.EQ, origin)
+		ftDSL = ftDSL + "@countries +" + countries.(string) + "~ "
 	}
+
+	if o, ok := persons.(string); ok && o != "" {
+		// q = q.Where("actors", reindexer.EQ, origin)
+		ftDSL = ftDSL + "@persons_names +" + persons.(string) + "~ "
+	}
+
+	if o, ok := name.(string); ok && o != "" {
+		// For name full text queries keep relevancy sorting
+		ftDSL = ftDSL + "@name +" + name.(string) + "~ "
+		sortByRelevancy = true
+	}
+
+	if ftDSL == "" {
+		ftDSL = "@*^0.3,name^1.1 " + queryText
+		sortByRelevancy = true
+	}
+
+	if !sortByRelevancy {
+		q.Sort("imdb", true)
+	}
+
+	q.Match("search", ftDSL)
 
 	if p, ok := period.(map[string]interface{}); ok {
 		addPeriodQuery(q, p)
@@ -79,6 +91,9 @@ func lookupMediaItems(genre, origin, period interface{}) *MediaItem {
 
 	if len(items) == 0 {
 		return nil
+	}
+	if sortByRelevancy {
+		return items[0].(*MediaItem)
 	}
 
 	return items[rand.Int()%len(items)].(*MediaItem)
@@ -114,14 +129,17 @@ func AOGHandler(c echo.Context) error {
 
 	fmt.Printf("p1->%#v\n\n\n", params.QueryResult.Parameters)
 	fmt.Printf("p2->%#v\n\n\n", params.QueryResult.OutputContexts[0].Parameters)
+	fmt.Printf("%#v", params)
 
 	textToSpeech := "К сожалению, ничего не найдено"
 
 	paramGenre := params.QueryResult.Parameters["movie-genre"]
 	paramOrigin := params.QueryResult.Parameters["movie-origin"]
 	paramDatePeriod := params.QueryResult.Parameters["date-period"]
+	paramPersons := params.QueryResult.Parameters["movie-persons"]
+	paramName := params.QueryResult.Parameters["movie-name"]
 
-	mi := lookupMediaItems(paramGenre, paramOrigin, paramDatePeriod)
+	mi := lookupMediaItems(paramGenre, paramOrigin, paramDatePeriod, paramPersons, paramName, params.QueryResult.QueryText)
 	var msg *FulfillmentMessage
 	if mi != nil {
 		textToSpeech = fmt.Sprintf("Рекомендую посмотреть %s от %s %s года", mi.Name, mi.Persons[0].Name, mi.Year)
@@ -159,7 +177,6 @@ func sendAOGResponce(c echo.Context, testToSpeech string, msg *FulfillmentMessag
 			SimpleResponse: SimpleResponse{TextToSpeech: testToSpeech},
 		},
 	)
-	ans.Source = "https://example.com"
 
 	if msg != nil {
 		ans.FulfillmentText = testToSpeech
@@ -202,7 +219,7 @@ type MediaItem struct {
 
 type EPGItem struct {
 	Name        string `json:"name"`
-	Description string `json:"descrition"`
+	Description string `json:"description"`
 	ChannelID   int    `json:"channel_id"`
 	StartTime   int    `json:"start_time"`
 	EndTime     int    `json:"end_time"`
