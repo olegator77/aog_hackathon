@@ -77,7 +77,7 @@ func lookupMediaItems(genre, countries, period, persons, name interface{}, query
 	q := db.Query("media_items").
 		Where("type", reindexer.EQ, "film").
 		Where("parent_id", reindexer.EMPTY, 0).
-		Limit(10)
+		Limit(100)
 
 	// https://github.com/Restream/reindexer/blob/master/fulltext.md#text-query-format
 	ftDSL := ""
@@ -154,7 +154,7 @@ func QueryEPGItems(fullTextQ string) (ret []EPGItem) {
 
 func resetHandler(c echo.Context, session string, params AOGRequestParams) error {
 	delete(sessionParams, session)
-	return sendAOGResponce(c, "Параметры сброшены", nil)
+	return sendAOGResponce(c, "Параметры сброшены", nil, nil)
 }
 
 func defaultHandler(c echo.Context, session string, params AOGRequestParams) error {
@@ -170,6 +170,7 @@ func defaultHandler(c echo.Context, session string, params AOGRequestParams) err
 
 	mi := lookupMediaItems(paramGenre, paramOrigin, paramDatePeriod, paramPersons, paramName, params.QueryResult.QueryText)
 	var msg *FulfillmentMessage
+	var card *BasicCard
 
 	if mi != nil {
 		textToSpeech = fmt.Sprintf("Рекомендую посмотреть %s от %s %s года", mi.Name, mi.Persons[0].Name, mi.Year)
@@ -179,34 +180,63 @@ func defaultHandler(c echo.Context, session string, params AOGRequestParams) err
 			subTitle = subTitle[0:120] + "..."
 		}
 
+		imageURL := "https://mos-itv01.svc.iptv.rt.ru" + mi.Logo
+		openURL := fmt.Sprintf("http://production.smarttv.itv.restr.im/pc/#/media_item/%d", mi.ID)
+
 		msg = &FulfillmentMessage{
 			Card: FulfillmentCard{
-				ImageURI: "https://mos-itv01.svc.iptv.rt.ru" + mi.Logo,
+				ImageURI: imageURL,
 				Title:    mi.Name,
 				Subtitle: subTitle,
 				Buttons: []FulfillmentButton{
 					FulfillmentButton{
 						"Смотреть",
-						fmt.Sprintf("http://production.smarttv.itv.restr.im/pc/#/media_item/%d", mi.ID),
+						openURL,
 					},
 				},
 			},
 		}
+
+		card = &BasicCard{
+			Title: mi.Name,
+			Image: Image{
+				URL:               imageURL,
+				AccessibilityText: mi.Name,
+			},
+			Buttons: []Button{
+				Button{
+					Title: "Смотреть",
+					OpenURLAction: OpenURLAction{
+						URL: openURL,
+					},
+				},
+			},
+			ImageDisplayOptions: "WHITE",
+		}
 	}
 
-	return sendAOGResponce(c, textToSpeech, msg)
+	return sendAOGResponce(c, textToSpeech, msg, card)
 
 }
 
-func sendAOGResponce(c echo.Context, testToSpeech string, msg *FulfillmentMessage) error {
+func sendAOGResponce(c echo.Context, testToSpeech string, msg *FulfillmentMessage, card *BasicCard) error {
+	fmt.Printf("textToSpeech = %+v\n", testToSpeech)
+
 	ans := AOGRequestAnswer{}
 
 	ans.Payload.Google.ExpectUserResponse = true
 	ans.Payload.Google.RichResponse.Items = append(ans.Payload.Google.RichResponse.Items,
 		RespItem{
-			SimpleResponse: SimpleResponse{TextToSpeech: testToSpeech},
+			SimpleResponse: &SimpleResponse{TextToSpeech: testToSpeech},
 		},
 	)
+	if card != nil {
+		ans.Payload.Google.RichResponse.Items = append(ans.Payload.Google.RichResponse.Items,
+			RespItem{
+				BasicCard: card,
+			},
+		)
+	}
 
 	if msg != nil {
 		ans.FulfillmentText = testToSpeech
@@ -301,12 +331,12 @@ type AOGRequestParams struct {
 		QueryText                string                 `json:"queryText"`
 		Parameters               map[string]interface{} `json:"parameters"`
 		AllRequiredParamsPresent bool                   `json:"allRequiredParamsPresent"`
-		FulfillmentText          string                 `json:"fulfillmentText"`
+		FulfillmentText          string                 `json:"fulfillmentText,omitempty"`
 		FulfillmentMessages      []struct {
 			Text struct {
 				Text []string `json:"text"`
 			} `json:"text"`
-		} `json:"fulfillmentMessages"`
+		} `json:"fulfillmentMessages,omitempty"`
 		OutputContexts []OutputContext `json:"outputContexts"`
 		Intent         struct {
 			Name        string `json:"name"`
@@ -322,7 +352,33 @@ type AOGRequestParams struct {
 }
 
 type RespItem struct {
-	SimpleResponse SimpleResponse `json:"simpleResponse"`
+	SimpleResponse *SimpleResponse `json:"simpleResponse,omitempty"`
+	BasicCard      *BasicCard      `json:"bacicCard,omitempty"`
+}
+
+type BasicCard struct {
+	Title               string   `json:"title"`
+	Image               Image    `json:"image"`
+	Buttons             []Button `json:"buttons"`
+	ImageDisplayOptions string   `json:"imageDisplayOptions"`
+}
+
+type Image struct {
+	URL               string `json:"url"`
+	AccessibilityText string `json:"accessibilityText"`
+}
+
+type Button struct {
+	Title         string        `json:"title"`
+	OpenURLAction OpenURLAction `json:"openUrlAction"`
+}
+
+type OpenURLAction struct {
+	URL string `json:"url"`
+}
+
+type Suggestion struct {
+	Title string `json:"title"`
 }
 
 type SimpleResponse struct {
@@ -352,14 +408,15 @@ type FulfillmentMessage struct {
 }
 
 type AOGRequestAnswer struct {
-	FulfillmentText     string               `json:"fulfillmentText"`
-	FulfillmentMessages []FulfillmentMessage `json:"fulfillmentMessages"`
-	Source              string               `json:"source"`
+	FulfillmentText     string               `json:"fulfillmentText,omitempty"`
+	FulfillmentMessages []FulfillmentMessage `json:"fulfillmentMessages,omitempty"`
+	Source              string               `json:"source,omitempty"`
 	Payload             struct {
 		Google struct {
 			ExpectUserResponse bool `json:"expectUserResponse"`
 			RichResponse       struct {
-				Items []RespItem `json:"items"`
+				Items       []RespItem   `json:"items,omitempty"`
+				Suggestions []Suggestion `json:"suggestions,omitempty"`
 			} `json:"richResponse"`
 		} `json:"google"`
 		// Facebook struct {
@@ -369,7 +426,7 @@ type AOGRequestAnswer struct {
 		// 	Text string `json:"text"`
 		// } `json:"slack"`
 	} `json:"payload"`
-	OutputContexts []OutputContext `json:"outputContexts"`
+	//OutputContexts []OutputContext `json:"outputContexts"`
 	// FollowupEventInput struct {
 	// 	Name         string            `json:"name"`
 	// 	LanguageCode string            `json:"languageCode"`
