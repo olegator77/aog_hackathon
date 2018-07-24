@@ -154,7 +154,10 @@ func QueryEPGItems(fullTextQ string) (ret []EPGItem) {
 
 func resetHandler(c echo.Context, session string, params AOGRequestParams) error {
 	delete(sessionParams, session)
-	return sendAOGResponce(c, "Параметры сброшены", nil, nil, nil)
+	return sendAOGResponce(c, "Какой фильм вы хотели бы посмотреть?", nil, nil, []Suggestion{
+		Suggestion{"ужасы из девяностых"},
+		Suggestion{"что-нибудь российское"},
+	})
 }
 
 func defaultHandler(c echo.Context, session string, params AOGRequestParams) error {
@@ -223,8 +226,6 @@ func defaultHandler(c echo.Context, session string, params AOGRequestParams) err
 }
 
 func sendAOGResponce(c echo.Context, testToSpeech string, msg *FulfillmentMessage, card *BasicCard, suggestions []Suggestion) error {
-	fmt.Printf("textToSpeech = %+v\n", testToSpeech)
-
 	ans := AOGRequestAnswer{}
 
 	ans.Payload.Google.ExpectUserResponse = true
