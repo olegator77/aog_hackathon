@@ -154,7 +154,7 @@ func QueryEPGItems(fullTextQ string) (ret []EPGItem) {
 
 func resetHandler(c echo.Context, session string, params AOGRequestParams) error {
 	delete(sessionParams, session)
-	return sendAOGResponce(c, "Параметры сброшены", nil, nil)
+	return sendAOGResponce(c, "Параметры сброшены", nil, nil, nil)
 }
 
 func defaultHandler(c echo.Context, session string, params AOGRequestParams) error {
@@ -171,6 +171,7 @@ func defaultHandler(c echo.Context, session string, params AOGRequestParams) err
 	mi := lookupMediaItems(paramGenre, paramOrigin, paramDatePeriod, paramPersons, paramName, params.QueryResult.QueryText)
 	var msg *FulfillmentMessage
 	var card *BasicCard
+	var suggestions []Suggestion
 
 	if mi != nil {
 		textToSpeech = fmt.Sprintf("Рекомендую посмотреть %s от %s %s года", mi.Name, mi.Persons[0].Name, mi.Year)
@@ -213,13 +214,15 @@ func defaultHandler(c echo.Context, session string, params AOGRequestParams) err
 			},
 			ImageDisplayOptions: "WHITE",
 		}
+
+		suggestions = append(suggestions, Suggestion{Title: "ок"}, Suggestion{Title: "сбросить"})
 	}
 
-	return sendAOGResponce(c, textToSpeech, msg, card)
+	return sendAOGResponce(c, textToSpeech, msg, card, suggestions)
 
 }
 
-func sendAOGResponce(c echo.Context, testToSpeech string, msg *FulfillmentMessage, card *BasicCard) error {
+func sendAOGResponce(c echo.Context, testToSpeech string, msg *FulfillmentMessage, card *BasicCard, suggestions []Suggestion) error {
 	fmt.Printf("textToSpeech = %+v\n", testToSpeech)
 
 	ans := AOGRequestAnswer{}
@@ -241,6 +244,10 @@ func sendAOGResponce(c echo.Context, testToSpeech string, msg *FulfillmentMessag
 	if msg != nil {
 		ans.FulfillmentText = testToSpeech
 		ans.FulfillmentMessages = append(ans.FulfillmentMessages, *msg)
+	}
+
+	if len(suggestions) != 0 {
+		ans.Payload.Google.RichResponse.Suggestions = append(ans.Payload.Google.RichResponse.Suggestions, suggestions...)
 	}
 
 	jsn, _ := json.Marshal(ans)
